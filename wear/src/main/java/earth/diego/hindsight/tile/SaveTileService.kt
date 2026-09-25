@@ -6,11 +6,12 @@ import androidx.wear.protolayout.DimensionBuilders.expand
 import androidx.wear.protolayout.LayoutElementBuilders
 import androidx.wear.protolayout.ModifiersBuilders
 import androidx.wear.protolayout.ResourceBuilders
+import androidx.wear.tiles.EventBuilders
 import androidx.wear.protolayout.TimelineBuilders
 import androidx.wear.tiles.RequestBuilders
 import androidx.wear.tiles.TileBuilders
 import androidx.wear.tiles.TileService
-import androidx.concurrent.futures.ResolvableFuture
+import com.google.common.util.concurrent.Futures
 import com.google.common.util.concurrent.ListenableFuture
 import earth.diego.hindsight.service.RecorderBus
 import earth.diego.hindsight.service.SaveState
@@ -111,22 +112,29 @@ class SaveTileService : TileService() {
             .setTileTimeline(timeline.build())
             .build()
 
-        return immediate(tile)
+        return Futures.immediateFuture(tile)
     }
 
     override fun onTileResourcesRequest(
         requestParams: RequestBuilders.ResourcesRequest,
-    ): ListenableFuture<ResourceBuilders.Resources> = immediate(
+    ): ListenableFuture<ResourceBuilders.Resources> = Futures.immediateFuture(
         ResourceBuilders.Resources.Builder().setVersion(RESOURCES_VERSION).build(),
     )
 
-    /** Both tile callbacks are pure computation, so the future is already resolved. */
-    private fun <T> immediate(value: T): ListenableFuture<T> =
-        ResolvableFuture.create<T>().apply { set(value) }
-
-    /** Refresh the snapshot on entry; tap actions are handled by TileActionActivity. */
-    override fun onTileEnterEvent(requestParams: androidx.wear.tiles.EventBuilders.TileEnterEvent) {
-        getUpdater(this).requestUpdate(SaveTileService::class.java)
+    /**
+     * Refresh the snapshot on entry; tap actions are handled by TileActionActivity.
+     *
+     * Tiles 1.5 deprecated the per-event `onTileEnterEvent`/`onTileLeaveEvent` pair
+     * in favour of this batched callback, which the renderer may deliver late and
+     * more than one at a time. Only ENTER means "the user is looking at it now".
+     */
+    override fun onRecentInteractionEventsAsync(
+        events: List<EventBuilders.TileInteractionEvent>,
+    ): ListenableFuture<Void?> {
+        if (events.any { it.eventType == EventBuilders.TileInteractionEvent.ENTER }) {
+            getUpdater(this).requestUpdate(SaveTileService::class.java)
+        }
+        return Futures.immediateFuture(null)
     }
 
     private fun text(value: String, sizeSp: Float, primary: Boolean) =

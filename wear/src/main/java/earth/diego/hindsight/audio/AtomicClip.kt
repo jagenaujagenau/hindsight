@@ -1,5 +1,6 @@
 package earth.diego.hindsight.audio
 
+import earth.diego.hindsight.shared.syncDirectory
 import java.io.File
 import java.io.RandomAccessFile
 
@@ -19,6 +20,8 @@ internal object AtomicClip {
             check(partial.length() > 0) { "Empty clip" }
             RandomAccessFile(partial, "rw").use { it.fd.sync() }
             check(partial.renameTo(output)) { "Could not finalise clip" }
+            // Do not confirm the save unless the renamed directory entry is synced.
+            syncDirectory(output.parentFile ?: File("."))
             return output
         } finally {
             partial.delete()

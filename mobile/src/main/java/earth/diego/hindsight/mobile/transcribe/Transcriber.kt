@@ -13,6 +13,8 @@ import android.speech.ModelDownloadListener
 import android.speech.RecognitionSupport
 import android.speech.RecognitionSupportCallback
 import android.util.Log
+import androidx.annotation.ChecksSdkIntAtLeast
+import androidx.annotation.RequiresApi
 import earth.diego.hindsight.mobile.audio.PcmDecoder
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -45,12 +47,25 @@ object Transcriber {
 
     private const val TAG = "Transcriber"
 
-    /** Generous: this runs faster than realtime, but a long clip is still minutes. */
-    private const val TIMEOUT_MS = 15 * 60 * 1000L
+    /**
+     * Shortest possible deadline. Recognition runs faster than realtime, but this
+     * floor keeps a hung recogniser from holding the foreground service forever.
+     */
+    private const val MIN_TIMEOUT_MS = 15 * 60 * 1000L
+
+    private const val NEEDS_TIRAMISU = "Needs Android 13 or newer"
+
+    /**
+     * The one source of truth for "this platform has the on-device recogniser
+     * API at all". @ChecksSdkIntAtLeast is what lets lint treat an early return
+     * on this as a real version guard, so the 33+ call sites below are checked
+     * rather than suppressed.
+     */
+    @ChecksSdkIntAtLeast(api = Build.VERSION_CODES.TIRAMISU)
+    private fun hasRecognizerApi() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU
 
     fun availability(context: Context): String? = when {
-        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ->
-            "Needs Android 13 or newer"
+        !hasRecognizerApi() -> NEEDS_TIRAMISU
 
         !SpeechRecognizer.isOnDeviceRecognitionAvailable(context) ->
             "On-device speech recognition is not available on this device"
@@ -63,11 +78,20 @@ object Transcriber {
         clip: File,
         onProgress: (done: Int, total: Int) -> Unit = { _, _ -> },
     ): TranscriptionResult {
+        if (!hasRecognizerApi()) return TranscriptionResult.Unavailable(NEEDS_TIRAMISU)
         availability(context)?.let { return TranscriptionResult.Unavailable(it) }
+        return transcribeOnDevice(context, clip, onProgress)
+    }
 
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private suspend fun transcribeOnDevice(
+        context: Context,
+        clip: File,
+        onProgress: (done: Int, total: Int) -> Unit,
+    ): TranscriptionResult {
         val started = System.currentTimeMillis()
 
-        val support = support(context)
+        val support = supportOnDevice(context)
         val chosen = chooseLanguage(support)
             ?: return TranscriptionResult.Unavailable(
                 support.error ?: "No speech model is installed. Supported here: " +
@@ -76,6 +100,9 @@ object Transcriber {
         Log.i(TAG, "Using $chosen (installed=${support.installed}, device locale=$language)")
 
         val pcm = File(context.cacheDir, "transcribe-${clip.name}.pcm")
+        // Per-clip scratch, so concurrent transcriptions of different clips cannot
+        // write each other's audio into the slice the recogniser is reading.
+        val slice = File(context.cacheDir, "transcribe-${clip.name}.slice.pcm")
 
         val info = withContext(Dispatchers.IO) {
             runCatching { PcmDecoder.decode(clip, pcm) }.getOrNull()
@@ -86,6 +113,11 @@ object Transcriber {
             return TranscriptionResult.Failed("Clip decoded to no audio")
         }
         Log.i(TAG, "Decoded ${clip.name}: ${info.bytes} bytes, ${info.sampleRate} Hz, ${info.channels}ch")
+        // Scale the deadline to the clip: a 60-minute recording (the retention cap)
+        // transcribes in roughly 40 minutes, so a fixed 15-minute wall guaranteed
+        // failure for anything long.
+        val clipDurationMs = info.bytes * 1000L / (info.sampleRate.toLong() * 2L * info.channels)
+        val timeoutMs = clipDurationMs.coerceAtLeast(MIN_TIMEOUT_MS)
 
         return try {
             // One bounded chunk at a time: the recogniser stops at the first real
@@ -95,21 +127,15 @@ object Transcriber {
             }
             Log.i(TAG, "Transcribing ${chunks.size} chunk(s)")
 
-            val slice = File(context.cacheDir, "transcribe-slice.pcm")
             val pieces = mutableListOf<String>()
 
-            withTimeout(TIMEOUT_MS) {
+            withTimeout(timeoutMs) {
                 chunks.forEachIndexed { index, chunk ->
                     withContext(Dispatchers.IO) { writeSlice(pcm, chunk, slice) }
+                    // A real recognition error (busy/server/network) throws here and
+                    // fails the whole transcription; silence returns an empty string.
                     val text = withContext(Dispatchers.Main) {
-                        runCatching {
-                            recognise(context, slice, info.sampleRate, info.channels, chosen).first
-                        }.getOrElse {
-                            // A chunk of pure silence legitimately recognises nothing;
-                            // that must not abort the rest of the recording.
-                            Log.i(TAG, "Chunk ${index + 1}/${chunks.size}: ${it.message}")
-                            ""
-                        }
+                        recognise(context, slice, info.sampleRate, info.channels, chosen).first
                     }
                     if (text.isNotBlank()) {
                         pieces += text
@@ -118,7 +144,6 @@ object Transcriber {
                     onProgress(index + 1, chunks.size)
                 }
             }
-            slice.delete()
 
             TranscriptionResult.Success(
                 // Stitched, not concatenated: overlapping chunks hear the seam
@@ -128,11 +153,12 @@ object Transcriber {
                 elapsedMs = System.currentTimeMillis() - started,
             )
         } catch (t: TimeoutCancellationException) {
-            TranscriptionResult.Failed("Timed out after ${TIMEOUT_MS / 1000}s")
+            TranscriptionResult.Failed("Timed out after ${timeoutMs / 1000}s")
         } catch (t: Throwable) {
             TranscriptionResult.Failed(t.message ?: "Recognition failed")
         } finally {
             pcm.delete()
+            slice.delete()
         }
     }
 
@@ -170,7 +196,18 @@ object Transcriber {
      * What the on-device recogniser can actually do here. The model is a download,
      * not a guarantee, so this distinguishes "unsupported" from "not fetched yet".
      */
-    suspend fun support(context: Context): Support = withContext(Dispatchers.Main) {
+    suspend fun support(context: Context): Support {
+        // Unguarded entry points crash on pre-13 phones; every public path gates
+        // the same way transcribe() does instead of trusting its callers. The
+        // @RequiresApi body below is what makes that contract compiler-checked
+        // rather than a comment lint has to take on faith.
+        if (!hasRecognizerApi()) return Support(emptyList(), emptyList(), emptyList(), NEEDS_TIRAMISU)
+        availability(context)?.let { return Support(emptyList(), emptyList(), emptyList(), it) }
+        return supportOnDevice(context)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private suspend fun supportOnDevice(context: Context): Support = withContext(Dispatchers.Main) {
         val recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         val done = CompletableDeferred<Support>()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -206,7 +243,14 @@ object Transcriber {
     }
 
     /** Asks the platform to fetch the on-device model for [language]. */
-    suspend fun downloadModel(context: Context): String = withContext(Dispatchers.Main) {
+    suspend fun downloadModel(context: Context): String {
+        if (!hasRecognizerApi()) return NEEDS_TIRAMISU
+        availability(context)?.let { return it }
+        return downloadModelOnDevice(context)
+    }
+
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
+    private suspend fun downloadModelOnDevice(context: Context): String = withContext(Dispatchers.Main) {
         val recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(context)
         val done = CompletableDeferred<String>()
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
@@ -237,6 +281,8 @@ object Transcriber {
         }
     }
 
+    /** Only reached through [transcribe] or another path already gated at 33+. */
+    @RequiresApi(Build.VERSION_CODES.TIRAMISU)
     private suspend fun recognise(
         context: Context,
         pcm: File,
@@ -281,11 +327,10 @@ object Transcriber {
             }
 
             override fun onError(error: Int) {
-                // A "no match" at the tail is normal once the audio runs out; only
-                // treat it as fatal if nothing at all was recognised.
-                if (pieces.isNotEmpty() &&
-                    (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT)
-                ) {
+                // "No match" / "speech timeout" mean the chunk was silence — normal
+                // and never fatal. Every other error (busy, server, network, client,
+                // audio) is a real failure and must surface, not read as empty text.
+                if (error == SpeechRecognizer.ERROR_NO_MATCH || error == SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
                     done.complete(pieces.joinToString(" ").trim() to pieces.size)
                 } else {
                     done.completeExceptionally(IllegalStateException(describe(error)))

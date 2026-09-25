@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
+import androidx.core.net.toUri
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -106,7 +106,7 @@ fun RecorderApp(initiallyGranted: Boolean, requiredPermissions: Array<String>, s
                 PermissionScreen(
                     permanentlyDenied = permanentlyDenied,
                     onRequest = { permissionRequested = true; permissionLauncher.launch(requiredPermissions) },
-                    onSettings = { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}"))) },
+                    onSettings = { context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, "package:${context.packageName}".toUri())) },
                 )
                 return@AppScaffold
             }

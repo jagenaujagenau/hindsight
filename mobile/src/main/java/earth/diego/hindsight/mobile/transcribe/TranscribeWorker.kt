@@ -16,10 +16,12 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import earth.diego.hindsight.mobile.R
 import earth.diego.hindsight.mobile.data.ClipStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Runs transcription for one clip.
@@ -40,7 +42,6 @@ class TranscribeWorker(
         const val KEY_ERROR = "error"
 
         private const val CHANNEL_ID = "transcribing"
-        private const val NOTIFICATION_ID = 4242
 
         private fun workName(clipId: String) = "transcribe-$clipId"
 
@@ -78,6 +79,10 @@ class TranscribeWorker(
      */
     override suspend fun getForegroundInfo(): ForegroundInfo = foregroundInfo(0, 0)
 
+    // Stable for this worker, distinct from all other workers in this process.
+    // Arrival notifications use a non-null filename tag; foreground ones are untagged.
+    private val notificationId = ForegroundNotificationIds.next()
+
     private fun foregroundInfo(done: Int, total: Int): ForegroundInfo {
         val manager = applicationContext.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
@@ -86,7 +91,7 @@ class TranscribeWorker(
         )
 
         val notification: Notification = NotificationCompat.Builder(applicationContext, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setSmallIcon(R.drawable.ic_stat_mic)
             .setContentTitle("Transcribing clip")
             .setContentText(if (total > 0) "Part $done of $total" else "Preparing…")
             .setProgress(total.coerceAtLeast(1), done, total == 0)
@@ -95,9 +100,9 @@ class TranscribeWorker(
             .build()
 
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ForegroundInfo(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+            ForegroundInfo(notificationId, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
         } else {
-            ForegroundInfo(NOTIFICATION_ID, notification)
+            ForegroundInfo(notificationId, notification)
         }
     }
 
@@ -132,4 +137,11 @@ class TranscribeWorker(
                 Result.failure(workDataOf(KEY_ERROR to outcome.reason))
         }
     }
+}
+
+/** Process-wide IDs for live foreground workers; never zero or reused on overflow. */
+internal object ForegroundNotificationIds {
+    private val nextId = AtomicInteger(1)
+
+    fun next(): Int = nextId.getAndUpdate { Math.incrementExact(it) }
 }

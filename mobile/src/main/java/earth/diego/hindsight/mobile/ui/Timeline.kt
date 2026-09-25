@@ -2,7 +2,8 @@ package earth.diego.hindsight.mobile.ui
 
 import earth.diego.hindsight.mobile.data.Clip
 import earth.diego.hindsight.mobile.data.ClipStore
-import java.util.Calendar
+import java.time.Instant
+import java.time.ZoneId
 
 /**
  * One row of the archive.
@@ -75,13 +76,11 @@ object Timeline {
     }
 
     private fun hourOf(millis: Long): Int =
-        Calendar.getInstance().apply { timeInMillis = millis }.get(Calendar.HOUR_OF_DAY)
+        Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault()).hour
 
-    private fun startOfDay(millis: Long): Long = Calendar.getInstance().apply {
-        timeInMillis = millis
-        set(Calendar.HOUR_OF_DAY, 0)
-        set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0)
-        set(Calendar.MILLISECOND, 0)
-    }.timeInMillis
+    private fun startOfDay(millis: Long): Long {
+        val zone = ZoneId.systemDefault()
+        return Instant.ofEpochMilli(millis).atZone(zone).toLocalDate()
+            .atStartOfDay(zone).toInstant().toEpochMilli()
+    }
 }

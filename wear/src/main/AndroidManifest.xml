@@ -12,13 +12,17 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!-- allowBackup="false" already disables backup on every release we support;
+         dataExtractionRules only adds the Android 12+ device-to-device exclusion,
+         so there is nothing for fullBackupContent to say below API 31. -->
     <application
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@android:style/Theme.DeviceDefault"
-        tools:targetApi="30">
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        tools:ignore="DataExtractionRules">
 
         <!-- Runs without a phone present; clips sync opportunistically. -->
         <meta-data
@@ -28,7 +32,6 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:taskAffinity=""
             android:theme="@android:style/Theme.DeviceDefault">
             <intent-filter>

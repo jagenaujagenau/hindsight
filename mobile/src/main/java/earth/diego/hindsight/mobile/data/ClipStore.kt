@@ -8,9 +8,11 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Calendar
-import java.util.Date
+import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 data class Clip(
@@ -45,7 +47,9 @@ object ClipStore {
 
     // Accept both legacy names and collision-safe watch saves made within one second.
     private val NAME_PATTERN = Regex("""clip_(\d{8}-\d{6})_(\d+)s(?:_[\da-f-]+)?\.m4a""")
-    private val STAMP_FORMAT = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US)
+    // Thread-safe and immutable, unlike SimpleDateFormat, which raced when a clip
+    // arrived on the Play-services thread while the library refreshed on IO.
+    private val STAMP_FORMATTER = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss", Locale.US)
 
     private val _clips = MutableStateFlow<List<Clip>>(emptyList())
     val clips: StateFlow<List<Clip>> = _clips.asStateFlow()
@@ -83,7 +87,12 @@ object ClipStore {
     internal fun toClip(file: File): Clip {
         val match = NAME_PATTERN.matchEntire(file.name)
         val recordedAt = match?.groupValues?.get(1)
-            ?.let { runCatching { STAMP_FORMAT.parse(it)?.time }.getOrNull() }
+            ?.let { stamp ->
+                runCatching {
+                    LocalDateTime.parse(stamp, STAMP_FORMATTER)
+                        .atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                }.getOrNull()
+            }
         return Clip(
             file = file,
             recordedAt = recordedAt ?: file.lastModified(),
@@ -134,37 +143,31 @@ object ClipStore {
         moved.forEach { (_, inTrash) -> inTrash.delete() }
     }
 
-    private fun startOfDay(millis: Long): Long = Calendar.getInstance().apply {
-        timeInMillis = millis
-        set(Calendar.HOUR_OF_DAY, 0)
-        set(Calendar.MINUTE, 0)
-        set(Calendar.SECOND, 0)
-        set(Calendar.MILLISECOND, 0)
-    }.timeInMillis
-
     fun dayLabel(dayStart: Long): String {
-        val today = startOfDay(System.currentTimeMillis())
-        val oneDay = 24L * 60 * 60 * 1000
-        return when (dayStart) {
+        val zone = ZoneId.systemDefault()
+        val today = LocalDate.now(zone)
+        val day = Instant.ofEpochMilli(dayStart).atZone(zone).toLocalDate()
+        return when (day) {
             today -> "Today"
-            today - oneDay -> "Yesterday"
-            else -> SimpleDateFormat(
-                if (isThisYear(dayStart)) "EEEE d MMMM" else "d MMMM yyyy",
-                Locale.getDefault(),
-            ).format(Date(dayStart))
+            // Calendar date arithmetic, not a fixed 24-hour offset: a 23- or
+            // 25-hour daylight-saving day is still correctly "yesterday".
+            today.minusDays(1) -> "Yesterday"
+            else -> day.format(
+                DateTimeFormatter.ofPattern(
+                    if (day.year == today.year) "EEEE d MMMM" else "d MMMM yyyy",
+                    Locale.getDefault(),
+                ),
+            )
         }
     }
 
-    private fun isThisYear(millis: Long): Boolean {
-        val year = Calendar.getInstance().apply { timeInMillis = millis }.get(Calendar.YEAR)
-        return year == Calendar.getInstance().get(Calendar.YEAR)
-    }
-
     fun fullDate(millis: Long): String =
-        SimpleDateFormat("EEEE d MMMM", Locale.getDefault()).format(Date(millis))
+        Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("EEEE d MMMM", Locale.getDefault()))
 
     fun timeOfDay(millis: Long): String =
-        SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(millis))
+        Instant.ofEpochMilli(millis).atZone(ZoneId.systemDefault())
+            .format(DateTimeFormatter.ofPattern("HH:mm", Locale.getDefault()))
 
     fun formatDuration(seconds: Long): String =
         "%d:%02d".format(seconds / 60, seconds % 60)

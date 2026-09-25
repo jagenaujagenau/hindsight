@@ -1,5 +1,6 @@
 package earth.diego.hindsight.audio
 
+import earth.diego.hindsight.shared.syncDirectory
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -50,5 +51,10 @@ class AtomicClipTest {
         val output = temp.newFile("clip.m4a").apply { writeText("original") }
         assertThrows(IllegalStateException::class.java) { AtomicClip.write(output) { it.writeText("replacement") } }
         assertEquals("original", output.readText())
+    }
+
+    @Test fun `directory sync failures propagate instead of reporting durability`() {
+        val missing = File(temp.root, "missing")
+        assertThrows(IOException::class.java) { syncDirectory(missing) }
     }
 }

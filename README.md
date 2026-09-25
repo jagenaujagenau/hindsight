@@ -4,10 +4,10 @@
 
 **A watch that is always listening, and remembers only the last few minutes.**
 
-![Kotlin](https://img.shields.io/badge/Kotlin-2.0.21-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white)
+![Kotlin](https://img.shields.io/badge/Kotlin-2.4.20-7F52FF?style=for-the-badge&logo=kotlin&logoColor=white)
 ![Wear OS](https://img.shields.io/badge/Wear_OS-Compose_M3-4285F4?style=for-the-badge&logo=wearos&logoColor=white)
 ![Android](https://img.shields.io/badge/Android-minSdk_26-3DDC84?style=for-the-badge&logo=android&logoColor=white)
-![Compose](https://img.shields.io/badge/Jetpack_Compose-2025.10-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white)
+![Compose](https://img.shields.io/badge/Jetpack_Compose-2026.09-4285F4?style=for-the-badge&logo=jetpackcompose&logoColor=white)
 
 </div>
 
@@ -32,7 +32,7 @@ clip is safely on disk.
 
 ## Quick start
 
-Requires **JDK 17** and the Android SDK (compileSdk 35). `adb` lives at
+Requires **JDK 17** and the Android SDK (compileSdk 37, stable platform 37.2). `adb` lives at
 `~/Library/Android/sdk/platform-tools/adb` on macOS if it isn't on your `PATH`.
 
 ```bash
@@ -182,7 +182,7 @@ required — the Data Layer pairs apps by applicationId and signing key, not by 
 ./gradlew :wear:testDebugUnitTest :mobile:testDebugUnitTest
 ```
 
-72 unit tests, covering audio retention, save publication, lifecycle serialization,
+74 unit tests, covering audio retention, save publication, lifecycle serialization,
 sync queue draining, status presentation, and phone metadata:
 
 | Suite | Covers |
@@ -190,7 +190,7 @@ sync queue draining, status presentation, and phone metadata:
 | `AdtsTest` | ADTS header round-trip; 16 kHz mono AAC-LC framing |
 | `SegmentRingTest` | Duration-based eviction, frequent short saves, retention shrink, pinned segments |
 | `RingRecorderLifecycleTest` | Nonblocking shutdown and no overlapping restart, using controlled threads |
-| `AtomicClipTest` | Final-file visibility, failed/empty builds, overwrite protection |
+| `AtomicClipTest` | Final-file visibility, failed/empty builds, overwrite protection, directory-sync failure propagation |
 | `UploadDrainTest` | Newly saved clips during transfer, serialization, missing acks, cancellation |
 | `RecorderBusTest` / `RecorderPresentationTest` | Replayable outcomes, matching acks, truthful feedback |
 | `WaveformMotionTest` | Interpolation, refresh-rate independence, interruption, settling, animation scale, safe inputs |
@@ -199,6 +199,7 @@ sync queue draining, status presentation, and phone metadata:
 | `StorageStatusTest` / `PermissionRecoveryTest` | Storage reserve, warning thresholds, battery, permission recovery |
 | `ClipStoreTest` | Legacy and collision-safe filenames retain phone metadata |
 | `TranscriptStitcherTest` | Splicing overlapping transcript chunks without stutter |
+| `ForegroundNotificationIdsTest` | Concurrent workers receive distinct nonzero notification IDs |
 | `TimelineTest` | Hour marks, quiet stretches, never spanning a day boundary |
 
 There are also **13 native instrumentation tests** for Compose UI, enlarged text, real
@@ -215,11 +216,10 @@ The JVM lifecycle test replaces only the capture thread body; it does not simula
   chunk boundaries surface different passages. It reliably finds *some* of what was said —
   good for locating roughly when something was discussed, not a verbatim record. An hour of
   audio is roughly 40 minutes of background work.
-- **The Gradle wrapper is on 9.0** while AGP is 8.7.3, which is outside AGP's documented
-  support matrix. It currently builds clean, but it is untested ground.
-- **Release builds are unsigned** and lint is disabled for them: AGP 8.7.3's bundled lint
-  throws `IncompatibleClassChangeError` against the newer androidx artifacts. `:wear:lintDebug`
-  also encounters this toolchain failure; it is not a passing validation gate.
+- **Release builds are unsigned**, with no CI or signing configuration for distribution.
+  Lint is a passing gate — `lintDebug` and `lintRelease` run on every module with the
+  release check re-enabled; the few remaining suppressions are deliberate choices
+  annotated where they occur.
 - No CI, and no signing configuration for distribution.
 
 ## License

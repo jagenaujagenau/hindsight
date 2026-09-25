@@ -4,11 +4,13 @@
     against a stored clip so its behaviour on long audio can be measured from
     adb. Not merged into release builds.
 -->
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
     <application>
         <receiver
             android:name=".transcribe.TranscribeProbeReceiver"
-            android:exported="true">
+            android:exported="true"
+            tools:ignore="ExportedReceiver">
             <intent-filter>
                 <action android:name="earth.diego.hindsight.TRANSCRIBE" />
             </intent-filter>

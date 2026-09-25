@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">Hindsight</string>
-    <string name="stop">Stop</string>
     <string name="notification_channel">Recording</string>
     <string name="notification_title">Listening</string>
     <string name="notification_text">Keeping the last %1$s</string>
+    <string name="notification_save_stop">Save &amp; stop</string>
+    <string name="notification_stop">Stop without saving</string>
 </resources>

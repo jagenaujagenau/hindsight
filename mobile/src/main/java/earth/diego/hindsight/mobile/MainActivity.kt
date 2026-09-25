@@ -178,8 +178,9 @@ private fun HindsightApp(player: ClipPlayer) {
             val workInfo by remember(clip.id) { TranscribeWorker.observe(context, clip.id) }
                 .collectAsStateWithLifecycle(initialValue = null)
 
+            val transcript = clip.transcript
             val transcriptState = when {
-                clip.transcript != null -> TranscriptState.Ready(clip.transcript!!)
+                transcript != null -> TranscriptState.Ready(transcript)
                 workInfo?.state == WorkInfo.State.RUNNING || workInfo?.state == WorkInfo.State.ENQUEUED ->
                     TranscriptState.Running(
                         done = workInfo?.progress?.getInt(TranscribeWorker.KEY_DONE, 0) ?: 0,

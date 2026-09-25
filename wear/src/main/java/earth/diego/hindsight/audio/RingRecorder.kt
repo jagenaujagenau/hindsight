@@ -200,13 +200,23 @@ class RingRecorder internal constructor(
             )
             check(minBuffer > 0) { "AudioRecord unavailable (min buffer $minBuffer)" }
 
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                AudioSpec.SAMPLE_RATE,
-                AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,
-                maxOf(minBuffer, PCM_READ_BYTES) * 4,
-            )
+            audioRecord = AudioRecord.Builder()
+                .setAudioSource(MediaRecorder.AudioSource.MIC)
+                .setAudioFormat(
+                    AudioFormat.Builder()
+                        .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                        .setSampleRate(AudioSpec.SAMPLE_RATE)
+                        .setChannelMask(AudioFormat.CHANNEL_IN_MONO)
+                        .build(),
+                )
+                .setBufferSizeInBytes(maxOf(minBuffer, PCM_READ_BYTES) * 4)
+                // The whole premise is a private rolling buffer of the wearer's
+                // surroundings. Privacy-sensitive capture makes the platform refuse
+                // to share this stream with any concurrently recording app, and is
+                // the reason `isClientSilenced` above is the only way we can lose
+                // the mic rather than silently handing it to someone else.
+                .setPrivacySensitive(true)
+                .build()
             check(audioRecord.state == AudioRecord.STATE_INITIALIZED) { "AudioRecord init failed" }
             audioRecord.registerAudioRecordingCallback(Executor { it.run() }, recordingCallback)
 

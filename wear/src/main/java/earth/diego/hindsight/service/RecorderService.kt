@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.annotation.SuppressLint
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
@@ -19,6 +20,7 @@ import android.os.IBinder
 import android.os.PowerManager
 import android.os.VibrationEffect
 import android.os.Vibrator
+import android.os.VibratorManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
@@ -159,7 +161,7 @@ class RecorderService : Service() {
                     // Stale-ring cleanup performs filesystem IO, never on the main thread.
                     recorder = withContext(Dispatchers.IO) {
                         AtomicClip.discardIncomplete(ClipOutbox.directory(this@RecorderService))
-                        RingRecorder(File(cacheDir, "ring"))
+                        RingRecorder(File(noBackupFilesDir, "ring"))
                     }
                     retention = settings.retention.first()
                     if (publishPending() > 0) ClipOutbox.enqueueUpload(this@RecorderService)
@@ -249,7 +251,7 @@ class RecorderService : Service() {
                         }
                         ACTION_SAVE_STOP -> {
                             if (recorder.state.value.recording) {
-                                saveBeforeStop(save = { saveClip().await() }, stop = {
+                                saveBeforeStop(save = { saveFreshForStop() }, stop = {
                                     settings.setListening(false)
                                     stopRecording(startId)
                                 })
@@ -278,10 +280,23 @@ class RecorderService : Service() {
                         }
                         ACTION_SET_RETENTION -> {
                             val minutes = intent?.getIntExtra(EXTRA_MINUTES, retention.minutes) ?: retention.minutes
-                            retention = Retention.fromMinutes(minutes)
-                            settings.setRetention(retention)
-                            recorder.setRetention(retention.minutes)
-                            if (recorder.state.value.recording) updateNotification() else stopSelf(startId)
+                            val requested = Retention.fromMinutes(minutes)
+                            try {
+                                if (requested.minutes > retention.minutes) {
+                                    // Growing the ring can exceed the space the session
+                                    // was preflighted for at start; recheck and keep the
+                                    // old window if there is no room.
+                                    val storage = withContext(Dispatchers.IO) { ClipOutbox.refreshStatus(this@RecorderService) }
+                                    StoragePolicy.requireSpace(storage.freeBytes, requested.minutes * 180_000L + StoragePolicy.MIB)
+                                }
+                                retention = requested
+                                settings.setRetention(requested)
+                                recorder.setRetention(requested.minutes)
+                                if (recorder.state.value.recording) updateNotification() else stopSelf(startId)
+                            } catch (t: InsufficientStorage) {
+                                RecorderBus.publishSessionNotice("Not enough free space for ${requested.label}. Sync clips to free space.")
+                                if (!recorder.state.value.recording && !recorder.state.value.starting) stopSelf(startId)
+                            }
                         }
                     }
                 } catch (t: CancellationException) {
@@ -362,7 +377,7 @@ class RecorderService : Service() {
                         settings.setListening(false)
                         stopRecording(expiredStartId)
                         RecorderBus.publishSessionNotice("Timer ended before audio was available.")
-                    } else if (saveBeforeStop(save = { saveClip().await() }, stop = {
+                    } else if (saveBeforeStop(save = { saveFreshForStop() }, stop = {
                         settings.setListening(false)
                         stopRecording(expiredStartId)
                     })) {
@@ -426,7 +441,7 @@ class RecorderService : Service() {
                     RecorderBus.publishSessionNotice(null)
                     // Confirmation belongs to persistence, not the tap; also works from the tile.
                     runCatching {
-                        getSystemService(Vibrator::class.java)?.vibrate(
+                        vibrator()?.vibrate(
                             VibrationEffect.createPredefined(VibrationEffect.EFFECT_CLICK),
                         )
                     }
@@ -465,6 +480,18 @@ class RecorderService : Service() {
         return job
     }
 
+    /**
+     * Saves a window captured *now* for a destructive action (save-and-stop or
+     * timer expiry). [saveClip] reuses an in-flight save so rapid ordinary taps
+     * coalesce; doing that here would discard everything captured after that
+     * earlier snapshot when the stop clears the buffer. Join first so the fresh
+     * pin never overlaps a live one, then pin anew.
+     */
+    private suspend fun saveFreshForStop(): Boolean {
+        saveJob?.join()
+        return saveClip().await()
+    }
+
     private fun newClipName(frames: Int): String {
         val stamp = SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
         val seconds = ClipBuilder.durationMs(frames) / 1000
@@ -473,17 +500,32 @@ class RecorderService : Service() {
 
     // ------------------------------------------------------------------
 
+    /**
+     * `getSystemService(Vibrator::class.java)` is deprecated from API 31; on a
+     * multi-actuator device it also picks an unspecified one. Ask the manager for
+     * the default actuator where that exists.
+     */
+    private fun vibrator(): Vibrator? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            getSystemService(VibratorManager::class.java)?.defaultVibrator
+        } else {
+            @Suppress("DEPRECATION")
+            getSystemService(Vibrator::class.java)
+        }
+
     private fun hasMicPermission() = ContextCompat.checkSelfPermission(
         this, Manifest.permission.RECORD_AUDIO,
     ) == PackageManager.PERMISSION_GRANTED
 
     private fun goForeground() {
-        val notification = buildNotification()
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(NOTIFICATION_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE)
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
+        startForeground(
+            NOTIFICATION_ID,
+            buildNotification(),
+            // Microphone is a while-in-use type on 34+: legal because every start
+            // path runs from a visible activity or the recorder's own notification,
+            // never a cold background start.
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE,
+        )
     }
 
     private fun updateNotification() {
@@ -519,12 +561,12 @@ class RecorderService : Service() {
             if (RecorderBus.storage.value?.warning != null) append(" · sync clips to free space")
         }
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-            .setSmallIcon(android.R.drawable.ic_btn_speak_now)
+            .setSmallIcon(R.drawable.ic_stat_mic)
             .setContentTitle(getString(R.string.notification_title))
             .setContentText(detail)
             .setContentIntent(open)
-            .addAction(android.R.drawable.ic_menu_save, "Save & stop", saveStop)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Stop without saving", stop)
+            .addAction(R.drawable.ic_action_save_stop, getString(R.string.notification_save_stop), saveStop)
+            .addAction(R.drawable.ic_action_stop, getString(R.string.notification_stop), stop)
             .setOngoing(true)
             .setSilent(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -550,6 +592,10 @@ class RecorderService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
+    // Session-scoped: held exactly while capture runs and released on every stop
+    // and error path. A timeout would silently end the CPU guarantee mid-session
+    // instead of surfacing a failure, so those release paths are the safety net.
+    @SuppressLint("WakelockTimeout")
     private fun acquireWakeLock() {
         if (wakeLock?.isHeld == true) return
         wakeLock = getSystemService(PowerManager::class.java)

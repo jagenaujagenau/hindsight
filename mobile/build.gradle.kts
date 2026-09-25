@@ -1,19 +1,20 @@
 plugins {
     alias(libs.plugins.android.application)
-    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
 }
 
 android {
     namespace = "earth.diego.hindsight.mobile"
-    compileSdk = 35
+    compileSdk {
+        version = release(37) { minorApiLevel = 2 }
+    }
 
     defaultConfig {
         // Identical to the wear module — the Data Layer pairs apps by
         // applicationId + signing key, not by module.
         applicationId = "earth.diego.hindsight"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 37
         versionCode = 1
         versionName = "1.0"
     }
@@ -30,19 +31,8 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
     buildFeatures {
         compose = true
-    }
-    lint {
-        // AGP 8.7.3's bundled lint crashes with IncompatibleClassChangeError while
-        // analysing the newer androidx artifacts, which fails release assembly.
-        // Disabling the individual detector is not enough — the crash happens
-        // during analysis setup — so the release gate is off until the toolchain
-        // moves to AGP 9.x. `./gradlew :wear:lintDebug` still runs on demand.
-        checkReleaseBuilds = false
     }
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"

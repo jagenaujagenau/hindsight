@@ -66,15 +66,37 @@ permission-settings return, rotary/TalkBack behavior, OS kills/reboots, storage 
 long backoff and battery cost remain physical-validation items. A passing JVM policy test
 or APK build does not establish those behaviors on a watch.
 
+## Audit verification corrections
+
+- Both watch saves and phone receipts now call the shared `syncDirectory` primitive
+  after rename. `FileChannel.open(path, READ).force(true)` uses a directory-capable
+  descriptor and native `fsync` on Android; `FileInputStream(directory)` does not.
+  Sync errors propagate before save confirmation or phone acknowledgement. An
+  already-renamed file is retained on failure rather than deleting saved audio.
+- Calendar-day conversion uses API-26-compatible `Instant.atZone(...).toLocalDate()`.
+  `LocalDate.ofInstant` requires API 34 and must not enter the phone's release DEX.
+- Arrival notifications use filename tags. Foreground transcription workers use
+  untagged, process-wide atomic IDs, retained for each worker's lifetime. Counter
+  exhaustion fails rather than wrapping to zero or reusing an ID.
+- Rejected retention growth keeps the existing setting and recording session.
+  When capture is idle, the rejected command stops its service instance rather
+  than leaving the periodic storage scan running.
+
+Verification includes real JVM directory sync and failure-propagation probes,
+concurrent ID allocation, unit tests, release builds, and release DEX inspection.
+These do not establish Android power-loss durability, native notification lifecycle,
+or service teardown on hardware; those remain device-validation items.
+
 ## Automated checks
 
-Requires JDK 17+ and Android SDK 35. A Homebrew JDK may need an explicit `JAVA_HOME`:
+Requires JDK 17+ and Android SDK 37 (stable platform 37.2). A Homebrew JDK may need an explicit `JAVA_HOME`:
 
 ```sh
 export JAVA_HOME=/opt/homebrew/opt/openjdk@21/libexec/openjdk.jdk/Contents/Home
 export ANDROID_HOME="$HOME/Library/Android/sdk"
 ./gradlew :wear:testDebugUnitTest :mobile:testDebugUnitTest \
-  :wear:assembleDebug :wear:assembleRelease :wear:assembleDebugAndroidTest :mobile:assembleDebug
+  :wear:lintDebug :mobile:lintDebug :wear:assembleDebug :wear:assembleRelease \
+  :wear:assembleDebugAndroidTest :mobile:assembleDebug
 ```
 
 The added lifecycle tests exercise the real start/stop/join code with controlled JVM
@@ -82,9 +104,10 @@ threads. They cannot validate AudioRecord, service destruction, or microphone fo
 restrictions. The queue tests exercise the real drain with temporary files, not Play
 Services or the WorkManager scheduler. Do not interpret these tests as device profiling.
 
-`:wear:lintDebug` currently crashes in the existing AGP/Compose lint combination with
-`IncompatibleClassChangeError` (`KaSimpleVariableAccessCall` / `FrequentlyChangingValueDetector`).
-No new suppressions or disabled checks were added to hide that failure.
+Lint runs clean across modules and build types on the AGP 9.4 toolchain that replaced
+the crashing 8.7.3 combination. Remaining `tools:ignore`/`@SuppressLint` annotations are
+deliberate and documented at each site: debug-only adb probes, the platform-consumed
+capability array, a session-scoped wake lock, and a strict-storage preflight choice.
 
 ## Physical-watch checks (not yet run)
 

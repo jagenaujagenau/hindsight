@@ -22,6 +22,10 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
+/** One clip exceeded its send budget; a per-file retry, not a whole-run abort. */
+private class TransferTimeoutException(file: String) :
+    IllegalStateException("Timed out sending $file")
+
 /**
  * Ships pending clips to the phone over a Data Layer channel.
  *
@@ -138,12 +142,15 @@ class ClipUploadWorker(
 
         var drainedNormally = false
         try {
-            withTimeout(SEND_TIMEOUT_MS) {
+            val finished = withTimeoutOrNull(SEND_TIMEOUT_MS) {
                 channelClient.registerChannelCallback(channel, callback).await()
                 channelClient.sendFile(channel, Uri.fromFile(file)).await()
                 drained.await()
                 drainedNormally = true
             }
+            // A per-file timeout is a plain failure so the drain retries this clip
+            // later and still sends every other clip in the queue.
+            if (finished == null) throw TransferTimeoutException(file.name)
         } finally {
             // Cancellation must release transport resources too. Never close a
             // successfully sent channel early; the phone owns that final close.

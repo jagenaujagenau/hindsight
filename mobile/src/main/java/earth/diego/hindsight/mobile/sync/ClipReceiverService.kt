@@ -18,8 +18,10 @@ import earth.diego.hindsight.mobile.R
 import earth.diego.hindsight.mobile.audio.WaveformWorker
 import earth.diego.hindsight.mobile.data.ClipStore
 import earth.diego.hindsight.shared.WearProtocol
+import earth.diego.hindsight.shared.syncDirectory
 import com.google.android.gms.tasks.Tasks
 import java.io.File
+import java.io.FileOutputStream
 
 /**
  * Receives clips pushed by the watch over a Data Layer channel.
@@ -57,11 +59,16 @@ class ClipReceiverService : WearableListenerService() {
 
         try {
             val input = Tasks.await(channelClient.getInputStream(channel))
-            input.use { source ->
-                partial.outputStream().use { sink -> source.copyTo(sink, COPY_BUFFER) }
+            FileOutputStream(partial).use { sink ->
+                input.use { source -> source.copyTo(sink, COPY_BUFFER) }
+                // Flush contents to disk before rename: the watch deletes its only
+                // copy once we acknowledge, so a power loss between rename and the
+                // data reaching disk would otherwise lose the recording.
+                sink.fd.sync()
             }
             check(partial.length() > 0) { "Received an empty clip" }
             check(partial.renameTo(destination)) { "Could not finalise ${destination.name}" }
+            syncDirectory(ClipStore.directory(this))
 
             ClipStore.refreshNow(this)
             // Build the envelope now so opening the clip later is instant.
@@ -116,9 +123,10 @@ class ClipReceiverService : WearableListenerService() {
         )
 
         manager.notify(
-            fileName.hashCode(),
+            fileName,
+            0,
             NotificationCompat.Builder(this, CHANNEL_ID)
-                .setSmallIcon(android.R.drawable.stat_sys_download_done)
+                .setSmallIcon(R.drawable.ic_stat_clip_arrived)
                 .setContentTitle("New clip from your watch")
                 .setContentText(fileName)
                 .setContentIntent(open)

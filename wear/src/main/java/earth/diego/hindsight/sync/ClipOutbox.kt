@@ -1,5 +1,6 @@
 package earth.diego.hindsight.sync
 
+import android.annotation.SuppressLint
 import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.ExistingWorkPolicy
@@ -30,9 +31,17 @@ object ClipOutbox {
             ?.sortedBy { it.name }
             .orEmpty()
 
-    /** Filesystem work; call from IO or a WearableListener callback. */
+    /**
+     * Filesystem work; call from IO or a WearableListener callback. Unsorted: a
+     * status total needs only a count and byte sum, and this runs every 30 s while
+     * recording, so it must not pay the O(N log N) sort the drain's send order needs.
+     */
+    // usableSpace, not getAllocatableBytes: a preflight must not assume the system
+    // will evict other apps' caches to make room for a recording.
+    @SuppressLint("UsableSpace")
     fun refreshStatus(context: Context): StorageStatus {
-        val files = pending(context)
+        val files = directory(context).listFiles { f -> f.isFile && f.extension == "m4a" }
+            .orEmpty()
         return StorageStatus(directory(context).usableSpace, files.sumOf { it.length() }, files.size)
             .also(RecorderBus::publishStorage)
     }
